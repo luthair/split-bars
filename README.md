@@ -45,10 +45,12 @@ Repeat a rule across the bar by appending `:`:
 
 ## Draw Steel stamina notes
 
-Draw Steel stamina bars can have a negative minimum (winded range). Thresholds use the *full bar range* (`min -> max`), not strictly `0 -> max`.
+Draw Steel stamina bars can have a negative minimum (winded range). You can choose how fractional rules treat this:
 
-- Fraction rules (like `1/3:`) split the full range.
-- For exact recovery breakpoints, use absolute stamina values instead of fractions.
+- **Full (min..max)** (default): Fraction rules like `1/3:` split the *full bar range* (`min -> max`), including the negative winded section.
+- **Positive only (0..max)**: Fraction rules split only the positive resource range (`0 -> max`). No fractional thresholds appear in the winded region.
+
+Use the per-bar **Fraction Range** setting in token configuration to switch modes. For exact recovery breakpoints, use absolute stamina values instead of fractions.
 
 ### Recovery threshold guidance
 

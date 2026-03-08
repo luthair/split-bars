@@ -8,9 +8,10 @@ const MAX_THRESHOLDS = 50;
  * @param {string} ex - Raw expression
  * @param {{ min: number, max: number }} attr - Bar attribute with min/max for absolute value conversion
  * @param {boolean} repeat - If true, repeat the threshold across the bar (e.g. 1/3: => [1/3, 2/3])
- * @returns {number[]} Normalized thresholds, may be empty
+ * @param {"full"|"positive"} [negativeRange="full"] - "full" = fractions use min..max; "positive" = fractions use 0..max only
+ * @returns {number[]} Normalized thresholds in (0, 1)
  */
-function parseSingleExpression(ex, attr, repeat) {
+function parseSingleExpression(ex, attr, repeat, negativeRange = "full") {
     if (ex.includes("%")) {
         ex = ex.replace(/%/g, "");
         ex = (Number(ex) / 100).toString();
@@ -34,18 +35,36 @@ function parseSingleExpression(ex, attr, repeat) {
         if (pct < attrMin || pct > attrMax) return [];
         if (attrRange <= 0 || !Number.isFinite(attrRange)) return [];
         pct = (pct - attrMin) / attrRange;
-    } else if (pct <= 0 || pct >= 1) {
-        return [];
+    } else {
+        if (pct <= 0 || pct >= 1) return [];
+        const fractionInPositive = pct;
+        if (negativeRange === "positive" && attrMin < 0) {
+            const valueAtPct = fractionInPositive * attrMax;
+            if (attrRange <= 0 || !Number.isFinite(attrRange)) return [];
+            pct = (valueAtPct - attrMin) / attrRange;
+            pct = Math.max(0, Math.min(1, pct));
+            if (pct <= 0 || pct >= 1) return [];
+        }
     }
 
     const thresholds = [];
-    const step = pct;
+    const stepSize = pct;
     let current = Math.round(pct * 100000) / 100000;
+    const fractionInPositive = negativeRange === "positive" && attrMin < 0
+        ? (current * attrRange + attrMin) / attrMax
+        : pct;
     do {
         if (current > 0 && current < 1) thresholds.push(current);
         if (!repeat) break;
-        current += step;
-        current = Math.round(current * 100000) / 100000;
+        if (negativeRange === "positive" && attrMin < 0) {
+            const n = thresholds.length + 1;
+            const nextVal = n * fractionInPositive * attrMax;
+            if (nextVal >= attrMax) break;
+            current = Math.round(((nextVal - attrMin) / attrRange) * 100000) / 100000;
+        } else {
+            current += stepSize;
+            current = Math.round(current * 100000) / 100000;
+        }
     } while (repeat && current < 1 && thresholds.length < MAX_THRESHOLDS);
 
     return thresholds;
@@ -55,17 +74,18 @@ function parseSingleExpression(ex, attr, repeat) {
  * Parse a full rule string into a sorted, deduplicated array of normalized thresholds.
  * @param {string} rawRule - Rule string (e.g. "1/3: 0.5 75%")
  * @param {{ min: number, max: number }} attr - Bar attribute for absolute value conversion
+ * @param {"full"|"positive"} [negativeRange="full"] - How fractional rules treat negative min
  * @returns {number[]} Sorted thresholds in (0, 1)
  */
-function parseRuleToThresholds(rawRule, attr) {
+function parseRuleToThresholds(rawRule, attr, negativeRange = "full") {
     if (!rawRule || typeof rawRule !== "string") return [];
     const statements = rawRule.split(/[; ,]+/).filter(Boolean);
     const all = [];
     for (const st of statements) {
-        let repeat = st.includes(":");
-        let ex = st.replace(/:/g, "");
+        const repeat = st.includes(":");
+        const ex = st.replace(/:/g, "");
         if (!ex) continue;
-        const t = parseSingleExpression(ex, attr, repeat);
+        const t = parseSingleExpression(ex, attr, repeat, negativeRange);
         all.push(...t);
     }
     const unique = [...new Set(all.map((v) => Math.round(v * 100000) / 100000))];
@@ -103,6 +123,12 @@ function computeSnappedPct(attr, thresholds) {
     return { rawPct, snappedPct };
 }
 
+function getNegativeRangeMode(doc, barIndex) {
+    const key = barIndex === 1 ? "negativeRange1" : "negativeRange2";
+    const v = doc.getFlag(MODULE_ID, key);
+    return v === "positive" ? "positive" : "full";
+}
+
 function _drawBar_Wrapper(wrapped, number, bar, data) {
     const barName = number === 1 ? "bar1" : "bar2";
     const ruleKey = number === 1 ? "rule1" : "rule2";
@@ -112,7 +138,8 @@ function _drawBar_Wrapper(wrapped, number, bar, data) {
         const attr = this.document.getBarAttribute(barName);
         if (attr && attr.type === "bar") {
             const rawRule = this.document.getFlag(MODULE_ID, ruleKey);
-            const thresholds = parseRuleToThresholds(rawRule, attr);
+            const negativeRange = getNegativeRangeMode(this.document, number);
+            const thresholds = parseRuleToThresholds(rawRule, attr, negativeRange);
             if (thresholds.length > 0) {
                 const { snappedPct } = computeSnappedPct(attr, thresholds);
                 const attrMin = Number.isFinite(Number(attr.min)) ? Number(attr.min) : 0;
@@ -125,6 +152,25 @@ function _drawBar_Wrapper(wrapped, number, bar, data) {
     }
 
     return wrapped(number, bar, data);
+}
+
+function getOrCreateOverlay(token, barName, bar) {
+    const key = `_splitBarsOverlay_${barName}`;
+    let overlay = token[key];
+    if (!overlay) {
+        overlay = new PIXI.Graphics();
+        token[key] = overlay;
+    }
+    const parent = bar.parent;
+    if (parent) {
+        if (overlay.parent !== parent) {
+            if (overlay.parent) overlay.parent.removeChild(overlay);
+            const idx = parent.getChildIndex(bar);
+            parent.addChildAt(overlay, idx + 1);
+        }
+        overlay.position.copyFrom(bar.position);
+    }
+    return overlay;
 }
 
 function drawBars_Wrapper(wrapped, ...args) {
@@ -142,26 +188,25 @@ function drawBars_Wrapper(wrapped, ...args) {
         if (!attr || (attr.type !== "bar")) return;
 
         const rawRule = this.document.getFlag(MODULE_ID, i === 0 ? "rule1" : "rule2");
-        const thresholds = parseRuleToThresholds(rawRule, attr);
+        const negativeRange = getNegativeRangeMode(this.document, i + 1);
+        const thresholds = parseRuleToThresholds(rawRule, attr, negativeRange);
+        if (thresholds.length === 0) return;
+
+        const overlay = getOrCreateOverlay(this, b, bar);
+        const w = this.w;
+        let h = bar.height ?? Math.max((canvas.dimensions.size / 12), 8);
+        if (this.document.height >= 2) h *= 1.6;
+        const bs = Math.clamp(h / 8, 1, 2);
+        const blk = 0x000000;
+
+        overlay.clear();
         for (const pct of thresholds) {
-            draw_line(this, bar, pct);
+            const x = Math.round(pct * w);
+            overlay.lineStyle(bs, blk, 1).moveTo(x, 0).lineTo(x, h);
         }
     });
 
     return result;
-}
-
-function draw_line(ref, bar, pct) {
-    let h = bar.height || Math.max((canvas.dimensions.size / 12), 8);
-    const w = bar.width || ref.w;
-    const bs = Math.clamp(h / 8, 1, 2);
-    if (ref.document.height >= 2) h *= 1.6;  // Enlarge the bar for large tokens
-
-    // Determine the color to use
-    const blk = 0x000000;
-
-    // Draw the bar
-    bar.lineStyle(bs, blk, 1).moveTo(pct*w, 0).lineTo(pct*w, h)
 }
 
 Hooks.once('setup', function () {
@@ -249,6 +294,10 @@ function injectSplitBarFields(app, html) {
     const rule2 = foundry.utils.hasProperty(target, "flags.split-bars.rule2")
         ? target.getFlag(MODULE_ID, "rule2")
         : "";
+    const negRange1 = target.getFlag(MODULE_ID, "negativeRange1");
+    const negRange2 = target.getFlag(MODULE_ID, "negativeRange2");
+    const neg1Val = negRange1 === "positive" ? "positive" : "full";
+    const neg2Val = negRange2 === "positive" ? "positive" : "full";
 
     const bar1Group = findFieldRow(bar1Select);
     const bar2Group = findFieldRow(bar2Select);
@@ -256,11 +305,13 @@ function injectSplitBarFields(app, html) {
 
     bar1Group.insertAdjacentHTML(
         "afterend",
-        `<div class="form-group split-bars-rule"><label title="Bar fill snaps down to these thresholds (e.g. 1/3: for thirds)">Bar 1 Threshold Rule</label><div class="form-fields"><input type="text" name="flags.${MODULE_ID}.rule1" value="${foundry.utils.escapeHTML(rule1 ?? "")}"></div></div>`
+        `<div class="form-group split-bars-rule"><label title="Bar fill snaps down to these thresholds (e.g. 1/3: for thirds)">Bar 1 Threshold Rule</label><div class="form-fields"><input type="text" name="flags.${MODULE_ID}.rule1" value="${foundry.utils.escapeHTML(rule1 ?? "")}"></div></div>
+        <div class="form-group split-bars-rule"><label title="When Positive only, fractional rules split only 0..max">Bar 1 Fraction Range</label><div class="form-fields"><select name="flags.${MODULE_ID}.negativeRange1"><option value="full" ${neg1Val === "full" ? "selected" : ""}>Full (min..max)</option><option value="positive" ${neg1Val === "positive" ? "selected" : ""}>Positive only (0..max)</option></select></div></div>`
     );
     bar2Group.insertAdjacentHTML(
         "afterend",
-        `<div class="form-group split-bars-rule"><label title="Bar fill snaps down to these thresholds (e.g. 1/3: for thirds)">Bar 2 Threshold Rule</label><div class="form-fields"><input type="text" name="flags.${MODULE_ID}.rule2" value="${foundry.utils.escapeHTML(rule2 ?? "")}"></div></div>`
+        `<div class="form-group split-bars-rule"><label title="Bar fill snaps down to these thresholds (e.g. 1/3: for thirds)">Bar 2 Threshold Rule</label><div class="form-fields"><input type="text" name="flags.${MODULE_ID}.rule2" value="${foundry.utils.escapeHTML(rule2 ?? "")}"></div></div>
+        <div class="form-group split-bars-rule"><label title="When 'Positive only', fractional rules like 1/3: split only 0..max, not the negative winded range">Bar 2 Fraction Range</label><div class="form-fields"><select name="flags.${MODULE_ID}.negativeRange2"><option value="full" ${neg2Val === "full" ? "selected" : ""}>Full (min..max)</option><option value="positive" ${neg2Val === "positive" ? "selected" : ""}>Positive only (0..max)</option></select></div></div>`
     );
 }
 
