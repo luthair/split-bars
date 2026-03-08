@@ -117,11 +117,20 @@ Hooks.once('ready', () => {
         ui.notifications.error("Module Split-Bars requires the 'libWrapper' module. Please install and activate it.");
 });
 
-Hooks.on("renderTokenApplication", (app, html) => {
-    html.querySelectorAll(".split-bars-rule").forEach((el) => el.remove());
+function getRootElement(html) {
+    if (html instanceof HTMLElement) return html;
+    if (html?.[0] instanceof HTMLElement) return html[0];
+    return null;
+}
 
-    const bar1Select = html.querySelector("select[name='bar1.attribute']");
-    const bar2Select = html.querySelector("select[name='bar2.attribute']");
+function injectSplitBarFields(app, html) {
+    const root = getRootElement(html);
+    if (!root) return;
+
+    root.querySelectorAll(".split-bars-rule").forEach((el) => el.remove());
+
+    const bar1Select = root.querySelector("select[name='bar1.attribute']");
+    const bar2Select = root.querySelector("select[name='bar2.attribute']");
     if (!bar1Select || !bar2Select) return;
 
     const target = app.token ?? app.document?.prototypeToken ?? app.document;
@@ -144,4 +153,12 @@ Hooks.on("renderTokenApplication", (app, html) => {
         "afterend",
         `<div class="form-group split-bars-rule"><label>Bar 2 Split Rule</label><div class="form-fields"><input type="text" name="flags.${MODULE_ID}.rule2" value="${foundry.utils.escapeHTML(rule2 ?? "")}"></div></div>`
     );
+}
+
+Hooks.on("renderTokenApplication", (app, html) => {
+    injectSplitBarFields(app, html);
+});
+
+Hooks.on("renderTokenConfig", (app, html) => {
+    injectSplitBarFields(app, html);
 });
