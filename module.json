@@ -4,13 +4,16 @@
     "description": "Segment your resource bars with custom rules and keep track at a glance.",
     "authors": [
       {
-      "name": "Henrik Bonsmann"
+        "name": "Henrik Bonsmann"
+      },
+      {
+        "name": "Luthair"
       }
     ],
-    "version": "1.0.3",
+    "version": "1.1.0",
     "compatibility": {
       "minimum": "11",
-      "verified": "12.331"
+      "verified": "13.351"
     },
     "scripts": [
         "scripts/split-bars.js"
@@ -22,13 +25,13 @@
                 "type": "module",
                 "compatibility": {
                     "minimum": "1.12.13.0",
-                    "verified": "1.13.2.0"
+                    "verified": "1.13.4.0"
                 }
             }
         ]
     },
-    "url": "https://github.com/Henrik-Bonsmann/split-bars",
-    "manifest": "https://raw.githubusercontent.com/Henrik-Bonsmann/split-bars/main/module.json",
-    "download": "https://github.com/Henrik-Bonsmann/split-bars/archive/refs/heads/main.zip",
+    "url": "https://github.com/luthair/split-bars",
+    "manifest": "https://raw.githubusercontent.com/luthair/split-bars/main/module.json",
+    "download": "https://github.com/luthair/split-bars/archive/refs/heads/main.zip",
     "readme": "REAMDE.md"
   }

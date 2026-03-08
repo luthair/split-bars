@@ -1,40 +1,56 @@
 # split-bars
-This foundry module lets you segment your resource bars with custom rules and keep track at a glance.
 
-![bar-split](https://github.com/Henrik-Bonsmann/split-bars/assets/112704394/1e677d34-2ca3-412f-b293-51bed84c1b08)
+Segment token resource bars with custom split markers.
 
-Keep track of important thresholds like encumbrance, hp morale values or pain and wound levels or visualize the amount of limited secondary resources directly!
+## Compatibility
 
-## Usage:
-Specify your segmentation rules in the Token Configuration. Simply separate different rules with `space`.
+- Foundry VTT v13
+- Draw Steel system (tested against current v0.10.x behavior)
+- `libWrapper` required
 
-![image](https://github.com/Henrik-Bonsmann/split-bars/assets/112704394/6193d672-7295-480c-8fe0-fbe3909e6fe4)
+## Usage
 
-### Fractions:
-Values smaller than 1 will be interpreted as a fraction of the resource. They can be provided in three different ways:
-1. As decimal:
-   > 0.2 0.6 .1
-3. As percentage:
-   > 75% 33% 20%
-5. As interger fraction:
-   > 1/3 7/8
+Open token configuration and enter split rules for `Bar 1 Split Rule` and/or `Bar 2 Split Rule`.
+Separate multiple rules with spaces.
 
-### Fixed Values:
-As long as it's below the bar's maximum, you can also provide specific values for the segmentation:
-> 100 1 3
+### Rule formats
 
-### Repetition:
-A rule can be repeated for the entire length of the bar by adding the `:` symbol - inspired by the [repeat sign](https://en.wikipedia.org/wiki/Repetition_(music)) in music.
+Values less than `1` are treated as fractions of the bar:
 
-> 1/3:
+1. Decimal:
+   - `0.2 0.6 .1`
+2. Percentage:
+   - `75% 33% 20%`
+3. Fraction:
+   - `1/3 7/8`
 
-Will split the bar in thirds, with segmentations at 1/3 and 2/3.
+Absolute values are also supported:
 
-> 1:
+- `100 1 3`
 
-Results in a 'box' for every point of resource.
+Repeat a rule across the bar by appending `:`:
 
+- `1/3:` -> draws lines at `1/3` and `2/3`
+- `1:` -> draws a box-like split at each point
 
-## Requirements
+## Draw Steel stamina notes
 
-Requires libWrapper 1.12.13.0+
+Draw Steel stamina bars can have a negative minimum (winded range). This affects how splits are interpreted:
+
+- Fraction rules (like `1/3:`) split the *full bar range* (`min -> max`), not strictly `0 -> max`.
+- If you need exact recovery breakpoints, use absolute stamina values instead of fractions.
+
+### Recovery threshold guidance
+
+If recovery is exactly `max / 3`:
+
+- `current <= 1/3 max` means you are missing enough for **2 recoveries**.
+- `1/3 max < current <= 2/3 max` means you are missing enough for **1 recovery**.
+- `current > 2/3 max` means you are missing less than 1 full recovery.
+
+So your idea of thirds is good for quick visual bands, but note:
+
+- `1/3:` gives three equal visual bands.
+- The **middle third** (`between 1/3 and 2/3`) corresponds to "missing about 1 recovery", not 2.
+
+For exact "2 recoveries missing" in Draw Steel, place one split at your actor's `1/3 max` absolute stamina value.
