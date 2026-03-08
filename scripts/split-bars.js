@@ -1,92 +1,150 @@
 const MODULE_ID = 'split-bars';
 
+const MAX_THRESHOLDS = 50;
+
+/**
+ * Parse a single rule expression (e.g. "1/3", "75%", "12", "1/3:") into normalized
+ * threshold value(s). Returns an array of numbers in (0, 1) or empty on invalid input.
+ * @param {string} ex - Raw expression
+ * @param {{ min: number, max: number }} attr - Bar attribute with min/max for absolute value conversion
+ * @param {boolean} repeat - If true, repeat the threshold across the bar (e.g. 1/3: => [1/3, 2/3])
+ * @returns {number[]} Normalized thresholds, may be empty
+ */
+function parseSingleExpression(ex, attr, repeat) {
+    if (ex.includes("%")) {
+        ex = ex.replace(/%/g, "");
+        ex = (Number(ex) / 100).toString();
+    }
+    if (ex.includes("/")) {
+        const div = ex.split("/");
+        const val = Number(div[0]) / Number(div[1]);
+        if (val > 1 || val <= 0 || !Number.isFinite(val)) return [];
+        ex = val.toString();
+    }
+    if (ex === "") return [];
+    let pct = Number(ex);
+    if (Number.isNaN(pct)) return [];
+
+    const attrMin = Number.isFinite(Number(attr.min)) ? Number(attr.min) : 0;
+    const attrMax = Number(attr.max);
+    const attrRange = attrMax - attrMin;
+    const isAbsolute = pct >= 1 || pct <= 0;
+
+    if (isAbsolute) {
+        if (pct < attrMin || pct > attrMax) return [];
+        if (attrRange <= 0 || !Number.isFinite(attrRange)) return [];
+        pct = (pct - attrMin) / attrRange;
+    } else if (pct <= 0 || pct >= 1) {
+        return [];
+    }
+
+    const thresholds = [];
+    const step = pct;
+    let current = Math.round(pct * 100000) / 100000;
+    do {
+        if (current > 0 && current < 1) thresholds.push(current);
+        if (!repeat) break;
+        current += step;
+        current = Math.round(current * 100000) / 100000;
+    } while (repeat && current < 1 && thresholds.length < MAX_THRESHOLDS);
+
+    return thresholds;
+}
+
+/**
+ * Parse a full rule string into a sorted, deduplicated array of normalized thresholds.
+ * @param {string} rawRule - Rule string (e.g. "1/3: 0.5 75%")
+ * @param {{ min: number, max: number }} attr - Bar attribute for absolute value conversion
+ * @returns {number[]} Sorted thresholds in (0, 1)
+ */
+function parseRuleToThresholds(rawRule, attr) {
+    if (!rawRule || typeof rawRule !== "string") return [];
+    const statements = rawRule.split(/[; ,]+/).filter(Boolean);
+    const all = [];
+    for (const st of statements) {
+        let repeat = st.includes(":");
+        let ex = st.replace(/:/g, "");
+        if (!ex) continue;
+        const t = parseSingleExpression(ex, attr, repeat);
+        all.push(...t);
+    }
+    const unique = [...new Set(all.map((v) => Math.round(v * 100000) / 100000))];
+    unique.sort((a, b) => a - b);
+    return unique.filter((v) => v > 0 && v < 1);
+}
+
+/**
+ * Compute raw and floor-snapped fill percentage for a bar.
+ * @param {{ value: number, min?: number, max: number }} attr - Bar attribute from getBarAttribute
+ * @param {number[]} thresholds - Sorted normalized thresholds in (0, 1)
+ * @returns {{ rawPct: number, snappedPct: number }}
+ */
+function computeSnappedPct(attr, thresholds) {
+    const attrMin = Number.isFinite(Number(attr.min)) ? Number(attr.min) : 0;
+    const attrMax = Number(attr.max);
+    const attrRange = attrMax - attrMin;
+    const value = Number(attr.value);
+
+    let rawPct = 0;
+    if (attrRange > 0 && Number.isFinite(attrRange)) {
+        rawPct = (value - attrMin) / attrRange;
+        rawPct = Math.max(0, Math.min(1, rawPct));
+    }
+
+    if (thresholds.length === 0) {
+        return { rawPct, snappedPct: rawPct };
+    }
+
+    let snappedPct = 0;
+    for (const t of thresholds) {
+        if (rawPct >= t) snappedPct = t;
+        else break;
+    }
+    return { rawPct, snappedPct };
+}
+
+function _drawBar_Wrapper(wrapped, number, bar, data) {
+    const barName = number === 1 ? "bar1" : "bar2";
+    const ruleKey = number === 1 ? "rule1" : "rule2";
+    const hasRule = foundry.utils.hasProperty(this.document, `flags.${MODULE_ID}.${ruleKey}`);
+
+    if (hasRule && data && typeof data === "object") {
+        const attr = this.document.getBarAttribute(barName);
+        if (attr && attr.type === "bar") {
+            const rawRule = this.document.getFlag(MODULE_ID, ruleKey);
+            const thresholds = parseRuleToThresholds(rawRule, attr);
+            if (thresholds.length > 0) {
+                const { snappedPct } = computeSnappedPct(attr, thresholds);
+                const attrMin = Number.isFinite(Number(attr.min)) ? Number(attr.min) : 0;
+                const attrMax = Number(attr.max);
+                const range = attrMax - attrMin;
+                const displayValue = attrMin + snappedPct * range;
+                data = { ...data, value: displayValue };
+            }
+        }
+    }
+
+    return wrapped(number, bar, data);
+}
 
 function drawBars_Wrapper(wrapped, ...args) {
-    // Once everything else is done, draw segmentation on top
     const result = wrapped(...args);
-    ["bar1", "bar2"].forEach((b, i) => {
 
-        // Check if there's rules for the bar
+    ["bar1", "bar2"].forEach((b, i) => {
         const hasRule = (i === 0 && foundry.utils.hasProperty(this.document, "flags.split-bars.rule1"))
             || (i === 1 && foundry.utils.hasProperty(this.document, "flags.split-bars.rule2"));
         if (!hasRule) return;
 
-        if (this.hud?.bars || this.bars) {
-            const bar = this.bars?.[b] ?? this.hud?.bars?.[b];
-            if (!bar) return;
+        const bar = this.bars?.[b] ?? this.hud?.bars?.[b];
+        if (!bar) return;
 
-            const attr = this.document.getBarAttribute(b);
-            if (!attr || (attr.type !== "bar")) {
-                bar.visible = false;
-                return;
-            }
+        const attr = this.document.getBarAttribute(b);
+        if (!attr || (attr.type !== "bar")) return;
 
-            // Get the appropriate rule
-            const rawRule = this.document.getFlag(MODULE_ID, i === 0 ? "rule1" : "rule2");
-            if (!rawRule || typeof rawRule !== "string") return;
-            const statements = rawRule.split(/[; ,]+/);
-
-            for (let ex of statements) {
-                let repeat = false;
-                if (ex.includes(":")) {
-                    repeat = true;
-                    ex = ex.replace(/:/g, "");
-                }
-
-                if (ex.includes("%")) {
-                    ex = ex.replace(/%/g, "");
-                    ex = (Number(ex) / 100).toString();
-                }
-
-                if (ex.includes("/")) {
-                    let div = ex.split("/");
-                    div = Number(div[0]) / Number(div[1]);
-                    if ((div > 1) || (div <= 0) || !Number.isFinite(div)) {
-                        console.warn(`Split Bars | Unsupported division argument: '${ex}'!`);
-                    }
-                    ex = div.toString();
-                }
-
-                if (ex === "") {
-                    console.warn("Split Bars | Expression is empty or consists only of command characters. The ':', '/' and '%' characters only work in conjunction with numerical values.");
-                    continue;
-                }
-                let pct = Number(ex);
-
-                if (Number.isNaN(pct)) {
-                    console.warn(`Split Bars | "${ex}" is not a supported expression!`);
-                    continue;
-                }
-                const attrMin = Number.isFinite(Number(attr.min)) ? Number(attr.min) : 0;
-                const attrMax = Number(attr.max);
-                const attrRange = attrMax - attrMin;
-                const isAbsolute = pct >= 1 || pct <= 0;
-
-                if (isAbsolute) {
-                    if ((pct < attrMin) || (pct > attrMax)) {
-                        console.warn(`Split Bars | "${ex}" is outside permissible values!`);
-                        continue;
-                    }
-                    if (attrRange <= 0 || !Number.isFinite(attrRange)) {
-                        console.warn(`Split Bars | "${ex}" cannot be evaluated for this bar's range!`);
-                        continue;
-                    }
-                    pct = (pct - attrMin) / attrRange;
-                } else if ((pct <= 0) || (pct >= 1)) {
-                    console.warn(`Split Bars | "${ex}" is outside permissible values!`);
-                    continue;
-                }
-
-                const step = pct;
-                do {
-                    // Round to five decimal places to avoid floating point errors.
-                    pct = Math.round(pct * 100000) / 100000;
-                    if ((pct <= 0) || (pct >= 1)) break;
-                    draw_line(this, bar, pct);
-                    pct += step;
-                }
-                while (repeat && (pct < 1));
-            }
+        const rawRule = this.document.getFlag(MODULE_ID, i === 0 ? "rule1" : "rule2");
+        const thresholds = parseRuleToThresholds(rawRule, attr);
+        for (const pct of thresholds) {
+            draw_line(this, bar, pct);
         }
     });
 
@@ -108,6 +166,7 @@ function draw_line(ref, bar, pct) {
 
 Hooks.once('setup', function () {
     if (!game.modules.get('lib-wrapper')?.active || !globalThis.libWrapper) return;
+    libWrapper.register(MODULE_ID, 'foundry.canvas.placeables.Token.prototype._drawBar', _drawBar_Wrapper, "MIXED");
     libWrapper.register(MODULE_ID, 'foundry.canvas.placeables.Token.prototype.drawBars', drawBars_Wrapper, "WRAPPER");
 });
 
@@ -197,11 +256,11 @@ function injectSplitBarFields(app, html) {
 
     bar1Group.insertAdjacentHTML(
         "afterend",
-        `<div class="form-group split-bars-rule"><label>Bar 1 Split Rule</label><div class="form-fields"><input type="text" name="flags.${MODULE_ID}.rule1" value="${foundry.utils.escapeHTML(rule1 ?? "")}"></div></div>`
+        `<div class="form-group split-bars-rule"><label title="Bar fill snaps down to these thresholds (e.g. 1/3: for thirds)">Bar 1 Threshold Rule</label><div class="form-fields"><input type="text" name="flags.${MODULE_ID}.rule1" value="${foundry.utils.escapeHTML(rule1 ?? "")}"></div></div>`
     );
     bar2Group.insertAdjacentHTML(
         "afterend",
-        `<div class="form-group split-bars-rule"><label>Bar 2 Split Rule</label><div class="form-fields"><input type="text" name="flags.${MODULE_ID}.rule2" value="${foundry.utils.escapeHTML(rule2 ?? "")}"></div></div>`
+        `<div class="form-group split-bars-rule"><label title="Bar fill snaps down to these thresholds (e.g. 1/3: for thirds)">Bar 2 Threshold Rule</label><div class="form-fields"><input type="text" name="flags.${MODULE_ID}.rule2" value="${foundry.utils.escapeHTML(rule2 ?? "")}"></div></div>`
     );
 }
 

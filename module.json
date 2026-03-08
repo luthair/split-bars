@@ -1,7 +1,7 @@
 {
     "id": "split-bars",
     "title": "Split Bars",
-    "description": "Segment your resource bars with custom rules and keep track at a glance.",
+    "description": "Snap token resource bars to configurable thresholds. Bar fill displays in discrete bands instead of continuous.",
     "authors": [
       {
         "name": "Henrik Bonsmann"
@@ -10,7 +10,7 @@
         "name": "Luthair"
       }
     ],
-    "version": "1.1.3",
+    "version": "1.2.0",
     "compatibility": {
       "minimum": "11",
       "verified": "13.351"
@@ -33,5 +33,5 @@
     "url": "https://github.com/luthair/split-bars",
     "manifest": "https://raw.githubusercontent.com/luthair/split-bars/main/module.json",
     "download": "https://github.com/luthair/split-bars/archive/refs/heads/main.zip",
-    "readme": "REAMDE.md"
+    "readme": "README.md"
   }
