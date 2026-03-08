@@ -108,7 +108,7 @@ function draw_line(ref, bar, pct) {
 
 Hooks.once('setup', function () {
     if (!game.modules.get('lib-wrapper')?.active || !globalThis.libWrapper) return;
-    libWrapper.register(MODULE_ID, 'Token.prototype.drawBars', drawBars_Wrapper, "WRAPPER");
+    libWrapper.register(MODULE_ID, 'foundry.canvas.placeables.Token.prototype.drawBars', drawBars_Wrapper, "WRAPPER");
 });
 
 
@@ -123,15 +123,65 @@ function getRootElement(html) {
     return null;
 }
 
+function findFieldRow(field) {
+    let current = field?.parentElement ?? null;
+    while (current) {
+        const hasLabel = !!current.querySelector(":scope > label");
+        const hasField = !!current.querySelector(":scope input, :scope select, :scope textarea");
+        if (hasLabel && hasField) return current;
+        if (current.matches("form, section, [data-application-part], .tab")) break;
+        current = current.parentElement;
+    }
+    return field?.closest(".form-group") ?? field?.parentElement ?? null;
+}
+
+function findBarAttributeField(root, index) {
+    const byName = root.querySelector(`select[name='bar${index}.attribute']`)
+        ?? root.querySelector(`[name='bar${index}.attribute']`);
+    if (byName) return byName;
+
+    const wantedLabel = `bar ${index} attribute`;
+    const label = Array.from(root.querySelectorAll("label")).find((el) =>
+        el.textContent?.trim().toLowerCase() === wantedLabel
+    );
+    if (!label) return null;
+
+    const row = findFieldRow(label);
+    return row?.querySelector("select, input[list]") ?? null;
+}
+
+function logSelectorDebug(root, app) {
+    if (root.dataset.splitBarsDebugLogged === "true") return;
+    root.dataset.splitBarsDebugLogged = "true";
+
+    const fieldNames = Array.from(root.querySelectorAll("select, input, textarea"))
+        .map((el) => `${el.tagName.toLowerCase()}:${el.getAttribute("name") ?? ""}`)
+        .filter((value) => value !== "input:" && value !== "textarea:")
+        .slice(0, 40);
+    const labels = Array.from(root.querySelectorAll("label"))
+        .map((el) => el.textContent?.trim())
+        .filter(Boolean)
+        .slice(0, 20);
+
+    console.warn("Split Bars | Could not find token bar attribute fields in this render.", {
+        application: app?.constructor?.name,
+        fieldNames,
+        labels
+    });
+}
+
 function injectSplitBarFields(app, html) {
     const root = getRootElement(html);
     if (!root) return;
 
     root.querySelectorAll(".split-bars-rule").forEach((el) => el.remove());
 
-    const bar1Select = root.querySelector("select[name='bar1.attribute']");
-    const bar2Select = root.querySelector("select[name='bar2.attribute']");
-    if (!bar1Select || !bar2Select) return;
+    const bar1Select = findBarAttributeField(root, 1);
+    const bar2Select = findBarAttributeField(root, 2);
+    if (!bar1Select || !bar2Select) {
+        logSelectorDebug(root, app);
+        return;
+    }
 
     const target = app.token ?? app.document?.prototypeToken ?? app.document;
     const rule1 = foundry.utils.hasProperty(target, "flags.split-bars.rule1")
@@ -141,8 +191,8 @@ function injectSplitBarFields(app, html) {
         ? target.getFlag(MODULE_ID, "rule2")
         : "";
 
-    const bar1Group = bar1Select.closest(".form-group");
-    const bar2Group = bar2Select.closest(".form-group");
+    const bar1Group = findFieldRow(bar1Select);
+    const bar2Group = findFieldRow(bar2Select);
     if (!bar1Group || !bar2Group) return;
 
     bar1Group.insertAdjacentHTML(
@@ -155,10 +205,44 @@ function injectSplitBarFields(app, html) {
     );
 }
 
+function scheduleSplitBarInjection(app, html) {
+    const root = getRootElement(html);
+    if (!root) return;
+
+    for (const delay of [0, 50, 150, 300]) {
+        globalThis.setTimeout(() => injectSplitBarFields(app, root), delay);
+    }
+
+    if (root.dataset.splitBarsTabWatcher === "true") return;
+    root.dataset.splitBarsTabWatcher = "true";
+
+    root.addEventListener("click", (event) => {
+        const target = event.target instanceof Element ? event.target.closest("[data-tab]") : null;
+        if (!target || target.dataset.tab !== "resources") return;
+        for (const delay of [0, 50, 150, 300]) {
+            globalThis.setTimeout(() => injectSplitBarFields(app, root), delay);
+        }
+    });
+}
+
+function isTokenConfigApplication(app) {
+    const appName = app?.constructor?.name;
+    return appName === "TokenConfig" || appName === "PrototypeTokenConfig";
+}
+
+Hooks.on("renderApplicationV2", (app, html) => {
+    if (!isTokenConfigApplication(app)) return;
+    scheduleSplitBarInjection(app, html);
+});
+
 Hooks.on("renderTokenApplication", (app, html) => {
-    injectSplitBarFields(app, html);
+    scheduleSplitBarInjection(app, html);
 });
 
 Hooks.on("renderTokenConfig", (app, html) => {
-    injectSplitBarFields(app, html);
+    scheduleSplitBarInjection(app, html);
+});
+
+Hooks.on("renderPrototypeTokenConfig", (app, html) => {
+    scheduleSplitBarInjection(app, html);
 });
